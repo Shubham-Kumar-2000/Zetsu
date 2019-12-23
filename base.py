@@ -22,6 +22,9 @@ LT='T_<'
 GT='T_>'
 LTE='T_<='
 GTE='T_>='
+TSTRING='T_str'
+VAR="T_variable"
+FUNC="T_function"
 KEYWORDS=[
 	'let',
 	'and',
@@ -37,7 +40,10 @@ KEYWORDS=[
 	'while',
 	'until',
 	'intInput',
-	'floatInput'
+	'floatInput',
+	'strInput',
+	'func',
+	'return'
 ]
 class Token:
 	def __init__(self,typ,line=0,val=None):
@@ -47,7 +53,7 @@ class Token:
 	def __repr__(self):
 		if self.val==None:
 			return f'{self.type}'
-		return f'{self.val}'
+		return f'[{self.val},{self.type}]'
 	def matches(self,typ,value):
 		if self.type==typ and self.val==value:
 			return True
@@ -100,7 +106,6 @@ class Lexer:
 		self.pos=Position(-1,0)
 		self.cChar=None
 		self.adv()
-
 	def adv(self):
 		self.pos.adv(self.cChar)
 		self.cChar=self.text[self.pos.getIndex()] if self.pos.getIndex()<len(self.text) else None
@@ -125,6 +130,11 @@ class Lexer:
 				tokens.append(self.makeLE())
 			elif self.cChar=='!':
 				token,err=self.makeNE()
+				if err:
+					return [],err
+				tokens.append(token)
+			elif self.cChar=='"':
+				token,err=self.makeString()
 				if err:
 					return [],err
 				tokens.append(token)
@@ -197,7 +207,16 @@ class Lexer:
 		if(st in KEYWORDS):
 			return Token(KEYWORD,self.pos.getLine(),st)
 		return Token(IDENTIFIER,self.pos.getLine(),st)
-
+	def makeString(self):
+		st=''
+		self.adv()
+		while self.cChar!='None' and self.cChar!='"':
+			st+=self.cChar
+			self.adv()
+		if self.cChar=='"':
+			self.adv()
+			return Token(TSTRING,self.pos.getLine(),st),None
+		return None,CharErr(self.pos.getLine(),"Expected ' \" ' ")
 class NumNode:
 	def __init__(self,tok):
 		self.tok=tok
@@ -227,10 +246,10 @@ class IdentifierTable:
 		}
 		self.parent=None
 	def get(self,name):
-		val=self.identifiers.get(name.val,VOID)
+		val=self.identifiers.get((VAR,name.val),VOID)
 		return val
 	def assign(self,name,value):
-		self.identifiers[name.val]=value
+		self.identifiers[(VAR,name.val)]=value
 	def update(self,name,value):
 		if self.get(name)==VOID:
 			return False
@@ -238,6 +257,11 @@ class IdentifierTable:
 		return True
 	def remove(self,name):
 		del self.identifiers[name]
+	def getfunction(self,name):
+		val=self.identifiers.get((FUNC,name.val),VOID)
+		return val
+	def assignfunction(self,name,value):
+		self.identifiers[(FUNC,name.val)]=value
 
 class VarAccess:
 	def __init__(self,tok):
@@ -280,6 +304,21 @@ class ifElseNode:
 		self.texcu=texcu
 		self.fexcu=fexcu
 
+class createFunctionNode:
+	def __init__(self,name,parameterCount,parameterList,retBool,ret,ex):
+		self.name=name
+		self.paraCount=parameterCount
+		self.paraList=parameterList
+		self.ret=ret
+		self.ex=ex
+		self.bool=retBool
+
+class excuFunctionNode:
+	def __init__(self,name,parameterCount,parameterList):
+		self.name=name
+		self.paraCount=parameterCount
+		self.paraList=parameterList
+
 class Parser:
 	def __init__(self,tokens):
 		self.tokens=tokens
@@ -314,6 +353,20 @@ class Parser:
 			return res.success(UnaryOpNode(tok,factor))
 		if(tok.type==IDENTIFIER):
 			res.register(self.adv())
+			if self.currentTok!=None and self.currentTok.type==LBRAC:
+				parameter_count=0
+				parameter_list=[]
+				res.register(self.adv())
+				while self.currentTok!=None and self.currentTok.type!=RBRAC:
+					var=res.register(self.exp())
+					if res.error:
+						return res
+					parameter_count+=1
+					parameter_list.append(var)
+				if self.currentTok==None or self.currentTok.type!=RBRAC:
+					return res.fail(InvalidSyntaxError(self.currentTok.line,"Expected ')'"))
+				res.register(self.adv())
+				return res.success(excuFunctionNode(tok,parameter_count,parameter_list))
 			return res.success(VarAccess(tok))
 		if self.currentTok!= None and tok.type==LBRAC:
 			res.register(self.adv())
@@ -327,7 +380,7 @@ class Parser:
 				if(self.currentTok==None):
 					return res.fail(InvalidSyntaxError(self.tokens[-1].line,"Expected )"))
 				return res.fail(InvalidSyntaxError(self.currentTok.line,"Expected )"))
-		if(self.currentTok!= None and tok.type in (INT,FLOAT)):
+		if(self.currentTok!= None and tok.type in (INT,FLOAT,TSTRING)):
 			res.register(self.adv())
 			return res.success(NumNode(tok))
 		if(tok==None):
@@ -344,6 +397,9 @@ class Parser:
 		if tok.matches(KEYWORD,'floatInput'):
 			res.register(self.adv())
 			return res.success(InputNode(FLOAT,tok.line))
+		if tok.matches(KEYWORD,'strInput'):
+			res.register(self.adv())
+			return res.success(InputNode(TSTRING,tok.line))
 		return res.fail(InvalidSyntaxError(tok.line,"Expected Int or FLOAT"))
 	def forloop(self):
 		tok=self.currentTok
@@ -400,6 +456,53 @@ class Parser:
 		res=ParseResult()
 		if self.currentTok==None or self.currentTok.val=='end':
 			return res.success(NumNode(Token(VOID,0,None)))
+		if self.currentTok.matches(KEYWORD,'func'):
+			tok=self.currentTok
+			res.register(self.adv())
+			if self.currentTok.type!=IDENTIFIER:
+				return res.fail(InvalidSyntaxError(self.currentTok.line,"Expected Identifier"))
+			funcName=self.currentTok
+			res.register(self.adv())
+			if self.currentTok.type!=LBRAC:
+				return res.fail(InvalidSyntaxError(self.currentTok.line,"Expected '('"))
+			parameter_count=0
+			parameter_list=[]
+			res.register(self.adv())
+			while self.currentTok!=None and self.currentTok.type!=RBRAC:
+				if self.currentTok.matches(KEYWORD,'let')==False:
+					return res.fail(InvalidSyntaxError(self.currentTok.line,"Expected 'let' keyword"))
+				res.register(self.adv())
+				if self.currentTok!=None and self.currentTok.type!=IDENTIFIER:
+					return res.fail(InvalidSyntaxError(self.currentTok.line,"Expected Identifier"))
+				parameter_count+=1
+				parameter_list.append(self.currentTok)
+				res.register(self.adv())
+			if self.currentTok==None or self.currentTok.type!=RBRAC:
+				return res.fail(InvalidSyntaxError(self.currentTok.line,"Expected ')'"))
+			res.register(self.adv())
+			retBool=True
+			if not self.currentTok.matches(KEYWORD,'return'):
+				retBool=False
+			else:
+				res.register(self.adv())
+			if retBool:
+				if not self.currentTok.matches(KEYWORD,'let'):
+					return res.fail(InvalidSyntaxError(self.currentTok.line,"Expected 'let' keyword"))
+				res.register(self.adv())
+				if self.currentTok!=None and self.currentTok.type!=IDENTIFIER:
+					return res.fail(InvalidSyntaxError(self.currentTok.line,"Expected Identifier"))
+				ret=self.currentTok
+				res.register(self.adv())
+			else:
+				ret=Token(VOID,tok.line,None)
+			if not self.currentTok.matches(KEYWORD,'then'):
+				return res.fail(InvalidSyntaxError(self.currentTok.line,"Expected 'then' keyword"))
+			res.register(self.adv())
+			ex=res.register(self.parse())
+			res.register(self.adv())
+			if res.error:
+				return res
+			return res.success(createFunctionNode(funcName,parameter_count,parameter_list,retBool,ret,ex))
 		if self.currentTok.matches(KEYWORD,'print')or self.currentTok.matches(KEYWORD,'println'):
 			tok=self.currentTok
 			res.register(self.adv())
@@ -540,6 +643,10 @@ class Interpreter:
 		self.ast=ast
 		self.table=table
 	def visit(self,node):
+		if isinstance(node,createFunctionNode):
+			return self.createFuncOp(node)
+		if isinstance(node,excuFunctionNode):
+			return self.excuFuncOp(node)
 		if isinstance(node,InputNode):
 			return self.inOp(node)
 		if isinstance(node,LoopNode):
@@ -560,14 +667,54 @@ class Interpreter:
 			return self.performUnaryOp(node)
 		if isinstance(node,NumNode):
 			return RTresult().success(node.tok)
+	def createFuncOp(self,node):
+		self.table.assignfunction(node.name,node)
+		return RTresult().success(Token(VOID,node.name.line,None))
+	def excuFuncOp(self,node):
+		res=RTresult()
+		val=self.table.getfunction(node.name)
+		if val==VOID:
+			return res.fail(RuntimeError(node.name.line,"Function not Defined"))
+		if val.paraCount!=node.paraCount:
+			return res.fail(RuntimeError(node.name.line,"Function parameter mismatch"))
+		newTable=IdentifierTable()
+		funcInterpreter=Interpreter(val.ex,newTable)
+		para=0
+		while para<val.paraCount:
+			assign=res.register(self.visit(node.paraList[para]))
+			if res.error:
+				return res
+			perform=VarAssign(val.paraList[para],NumNode(assign))
+			ex=res.register(funcInterpreter.visit(perform))
+			if res.error:
+				return res
+			para+=1
+		if val.bool:
+			perform=VarAssign(val.ret,NumNode(Token(VOID,val.name.line,None)))
+			ex=res.register(funcInterpreter.visit(perform))
+			if res.error:
+				return res
+		ex=res.register(funcInterpreter.visit(val.ex))
+		if res.error:
+			return res
+		if val.bool:
+			perform=VarAccess(val.ret)
+			ex=res.register(funcInterpreter.visit(perform))
+			if res.error:
+				return res
+		else:
+			ex=Token(VOID,node.name.line,None)
+		return res.success(ex)
 	def inOp(self,node):
 		i=input()
 		res=RTresult()
 		try:
 			if node.typ==INT:
 				val = int(i)
-			else:
+			elif node.typ==FLOAT:
 				val = float(i)
+			else:
+				val=val
 		except ValueError:
 			return res.fail(InputError(node.line,('expected '+node.typ)))
 		return res.success(Token(node.typ,node.line,val))
@@ -635,7 +782,7 @@ class Interpreter:
 		r=res.register(self.visit(node.rightNode))
 		if res.error:
 			return res
-		if node.opTok.type==KEYWORD:
+		if node.opTok.type==KEYWORD and (not (l.type==TSTRING or r.type==TSTRING)):
 			if node.opTok.val=='and':
 				result=int(l.val and r.val)
 			if node.opTok.val=='or':
@@ -643,10 +790,24 @@ class Interpreter:
 			return res.success(Token(INT,node.opTok.line,result))
 		if l.val==None:
 			return res.fail(RuntimeError(l.line,'Recieved None is expression'))
-		l=l.val
 		if r.val==None:
 			return res.fail(RuntimeError(r.line,'Recieved None is expression'))
+		if l.type==TSTRING or r.type==TSTRING:
+			r=r.val
+			l=l.val
+			typ=INT
+			if(node.opTok.type==PLUS):
+				result=l+r
+				typ=TSTRING
+			elif(node.opTok.type==EE):
+				result=int(l==r)
+			elif(node.opTok.type==NE):
+				result=int(l!=r)
+			else:
+				return res.fail(RuntimeError(node.opTok.line,"Incompitable operation on Operands"))
+			return res.success(Token(typ,node.opTok.line,result))
 		r=r.val
+		l=l.val
 		result=0
 		if(node.opTok.type==PLUS):
 			result=l+r
@@ -694,6 +855,8 @@ class Interpreter:
 			return res.success(tok)
 		if tok.val==None:
 			return res.fail(RuntimeError(tok.line,'Recieved None is expression'))
+		if tok.type==TSTRING:
+			return res.fail(RuntimeError(node.opTok.line,"Incompitable operation on Operand"))
 		if(node.opTok.type==MINUS):
 			tok.val=0-tok.val
 		return res.success(tok)
