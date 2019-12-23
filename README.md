@@ -1,5 +1,6 @@
 # Zetsu
 Its a programming Language developed using python which support a basic operations .
+You can check the demo program at demo.zs file
 # Grammar Rules of Zetsu
   **Intitialize variable:**
       **Syntax** : >_let <variable_name>~~= \<expression>~~_
