@@ -245,14 +245,21 @@ class IdentifierTable:
 			"False":Token(INT,0,0)
 		}
 		self.parent=None
-	def get(self,name):
+	def getFromThis(self,name):
 		val=self.identifiers.get((VAR,name.val),VOID)
+		return val
+	def get(self,name):
+		val=self.getFromThis(name)
+		if val==VOID and self.parent!=None:
+			return self.parent.get(name)
 		return val
 	def assign(self,name,value):
 		self.identifiers[(VAR,name.val)]=value
 	def update(self,name,value):
-		if self.get(name)==VOID:
-			return False
+		if self.getFromThis(name)==VOID:
+			if self.parent==None or self.parent.get(name)==VOID:
+				return False
+			return self.parent.update(name,value)
 		self.assign(name,value)
 		return True
 	def remove(self,name):
@@ -678,6 +685,7 @@ class Interpreter:
 		if val.paraCount!=node.paraCount:
 			return res.fail(RuntimeError(node.name.line,"Function parameter mismatch"))
 		newTable=IdentifierTable()
+		newTable.parent=self.table
 		funcInterpreter=Interpreter(val.ex,newTable)
 		para=0
 		while para<val.paraCount:
