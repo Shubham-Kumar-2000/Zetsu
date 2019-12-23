@@ -714,7 +714,7 @@ class Interpreter:
 			elif node.typ==FLOAT:
 				val = float(i)
 			else:
-				val=val
+				val=i
 		except ValueError:
 			return res.fail(InputError(node.line,('expected '+node.typ)))
 		return res.success(Token(node.typ,node.line,val))
